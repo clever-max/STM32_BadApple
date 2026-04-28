@@ -1,0 +1,41 @@
+# ==== 用户指定排除的目录 ====
+晴天/
+__pycache__/
+Hardware_1/
+KeilProj-master/
+
+# ==== Keil MDK 编译产物 ====
+Objects/
+Listings/
+RTE/
+*.uvguix.*
+*.uvoptx
+*.dep
+*.crf
+*.d
+*.o
+*.axf
+*.htm
+*.lnp
+*.sct
+*.map
+*.lst
+*.uvgui.*
+JLinkLog.txt
+JLinkSettings.ini
+
+# ==== 商家资料 & 参考文档 ====
+02-参考文档/
+05-商家资料/
+
+# ==== 视频源文件 ====
+video/*.mp4
+
+# ==== Python ====
+__pycache__/
+*.pyc
+*.pyo
+
+# ==== 杂项 ====
+*.bak
+*.tmp
