@@ -720,6 +720,11 @@
               <FileType>1</FileType>
               <FilePath>.\Hardware\audio_pwm.c</FilePath>
             </File>
+            <File>
+              <FileName>music_score.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\music_score.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -743,7 +748,7 @@
             <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\main.c</FilePath>
+              <FilePath>.\User\main.c</FilePath>
             </File>
           </Files>
         </Group>

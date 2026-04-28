@@ -129,12 +129,11 @@ void PendSV_Handler(void)
 
 /**
   * @brief  This function handles SysTick Handler.
+  *         (Moved to main.c for dual-buzzer ms_counter)
   * @param  None
   * @retval None
   */
-void SysTick_Handler(void)
-{
-}
+/* SysTick_Handler is now defined in main.c */
 
 /******************************************************************************/
 /*                 STM32F10x Peripherals Interrupt Handlers                   */

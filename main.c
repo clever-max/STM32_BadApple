@@ -1,12 +1,19 @@
 /**
- * test_buzzer.c - 蜂鸣器音乐测试程序（串口控制版）
+ * test_buzzer.c - 蜂鸣器音乐测试程序（串口控制 / 双蜂鸣器版）
  * 
  * PC 通过串口发送单字符即可切换测试：
  *   发送 '1'     → 音阶测试
  *   发送 '2'     → 小星星测试
  *   发送 '3'     → Bad Apple 完整音乐
  *   发送 '+'/'-' → 音量加减（步进 10%）
+ *   发送 'h'     → 切换和声模式 (OFF/UNI/OCT/5TH)
  *   发送 's'     → 停止当前播放
+ * 
+ * 和声模式：PA0 主蜂鸣器 + PA1 和声蜂鸣器
+ *   OFF  - 仅 PA0
+ *   UNI  - 同频 (音量加倍)
+ *   OCT  - 高八度 (2× freq)
+ *   5TH  - 纯五度 (1.5× freq)
  * 
  * 串口设置：PA9=TX, PA10=RX, 115200-8-N-1
  */
@@ -107,22 +114,40 @@ static void USART1_Init(uint32_t baud)
 /* ================================================================
  * 菜单与命令等待
  * ================================================================ */
+static const char *harmony_name(HarmonyMode m)
+{
+    switch (m)
+    {
+    case HARMONY_OFF:    return "OFF";
+    case HARMONY_UNISON: return "UNI";
+    case HARMONY_OCTAVE: return "OCT";
+    case HARMONY_FIFTH:  return "5TH";
+    default:             return "???";
+    }
+}
+
 static void OLED_ShowMenu(void)
 {
     uint8_t vol = AudioPWM_GetVolume();
+    HarmonyMode hm = AudioPWM_GetHarmony();
+    const char *hn = harmony_name(hm);
 
     OLED_Clear();
     OLED_ShowString(0, 0, "==BuzzerTest==", OLED_8X16);
-    OLED_ShowString(0, 18, "Vol:   % +  -", OLED_6X8);
+    OLED_ShowString(0, 18, "Vol:", OLED_6X8);
     OLED_ShowNum(24, 18, vol, 3, OLED_6X8);
+    OLED_ShowString(42, 18, "%Harm:", OLED_6X8);
+    OLED_ShowString(78, 18, (char *)hn, OLED_6X8);
     OLED_ShowString(0, 30, "1:Scale 2:Twinkle", OLED_6X8);
-    OLED_ShowString(0, 42, "3:BadApple s:Stop", OLED_6X8);
+    OLED_ShowString(0, 42, "3:BadApple h:Harm", OLED_6X8);
     OLED_Update();
 }
 
 static void USART_ShowMenu(void)
 {
     uint8_t vol = AudioPWM_GetVolume();
+    HarmonyMode hm = AudioPWM_GetHarmony();
+    const char *hn = harmony_name(hm);
 
     USART1_SendString("\r\n========================\r\n");
     USART1_SendString("  Buzzer Test Menu\r\n");
@@ -131,6 +156,7 @@ static void USART_ShowMenu(void)
     USART1_SendString("  2 - Twinkle Twinkle\r\n");
     USART1_SendString("  3 - Bad Apple (full)\r\n");
     USART1_SendString("  + - Volume (+-10%)\r\n");
+    USART1_SendString("  h - Harmony mode\r\n");
     USART1_SendString("  s - Stop current\r\n");
     USART1_SendString("========================\r\n");
 
@@ -138,7 +164,26 @@ static void USART_ShowMenu(void)
     USART1_SendChar('0' + vol / 100);
     USART1_SendChar('0' + (vol / 10) % 10);
     USART1_SendChar('0' + vol % 10);
-    USART1_SendString("%\r\nSend a command: ");
+    USART1_SendString("%  Harmony: ");
+    USART1_SendString(hn);
+    USART1_SendString("\r\nSend a command: ");
+}
+
+static void HarmonyCycle(void)
+{
+    HarmonyMode next[] = {HARMONY_OFF, HARMONY_UNISON, HARMONY_OCTAVE, HARMONY_FIFTH};
+    HarmonyMode cur = AudioPWM_GetHarmony();
+    int i;
+    for (i = 0; i < 4; i++)
+    {
+        if (next[i] == cur) break;
+    }
+    i = (i + 1) % 4;
+    AudioPWM_SetHarmony(next[i]);
+    const char *hn = harmony_name(next[i]);
+    USART1_SendString("Harmony: ");
+    USART1_SendString(hn);
+    USART1_SendString("\r\n");
 }
 
 static char WaitCmd(void)
@@ -169,6 +214,10 @@ static uint8_t PollStopCmd(void)
         {
             int8_t v = (int8_t)AudioPWM_GetVolume();
             if (v > 0) { v -= 10; if (v < 0) v = 0; AudioPWM_SetVolume((uint8_t)v); }
+        }
+        if (c == 'h' || c == 'H')
+        {
+            HarmonyCycle();
         }
     }
     return 0;
@@ -234,13 +283,18 @@ static void Test3_BadApple(void)
 {
     OLED_Clear();
     OLED_ShowString(0, 0, "Test3:BadApple", OLED_8X16);
-    OLED_ShowString(0, 20, "827 notes", OLED_6X8);
+    OLED_ShowNum(0, 20, BAD_APPLE_SCORE_NOTE_COUNT, 3, OLED_6X8);
+    OLED_ShowString(18, 20, " notes", OLED_6X8);
     OLED_ShowString(0, 36, "Send s to stop", OLED_6X8);
     OLED_Update();
 
-    USART1_SendString("\r\n[Test 3] Bad Apple (827 notes)...\r\n");
+    USART1_SendString("\r\n[Test 3] Bad Apple (");
+    USART1_SendChar('0' + BAD_APPLE_SCORE_NOTE_COUNT / 100);
+    USART1_SendChar('0' + (BAD_APPLE_SCORE_NOTE_COUNT / 10) % 10);
+    USART1_SendChar('0' + BAD_APPLE_SCORE_NOTE_COUNT % 10);
+    USART1_SendString(" notes)...\r\n");
 
-    AudioPWM_PlayScore(bad_apple_score, BAD_APPLE_NOTE_COUNT);
+    AudioPWM_PlayScore(bad_apple_score, BAD_APPLE_SCORE_NOTE_COUNT);
     while (AudioPWM_IsPlaying())
     {
         AudioPWM_Update();
@@ -303,6 +357,8 @@ int main(void)
             USART1_SendString("%\r\n");
         } break;
         case 's': USART1_SendString("Idle (nothing to stop)\r\n"); break;
+        case 'h':
+        case 'H': HarmonyCycle(); break;
         default:
             USART1_SendString("Unknown command. Use 1/2/3/s\r\n");
             break;

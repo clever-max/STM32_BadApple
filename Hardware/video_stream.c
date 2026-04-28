@@ -21,7 +21,37 @@ static uint8_t temp_frame[STREAM_FRAME_SIZE];
 static volatile uint8_t frame_ready = 0;
 static uint8_t music_started = 0;  /* 蜂鸣器是否已触发 */
 
-__weak void USART1_IRQHandler(void)
+static void _process_cmd(uint8_t cmd)
+{
+	switch (cmd)
+	{
+	case 'h':
+	case 'H':
+	{
+		HarmonyMode next[] = {HARMONY_OFF, HARMONY_UNISON, HARMONY_OCTAVE, HARMONY_FIFTH};
+		HarmonyMode cur = AudioPWM_GetHarmony();
+		int i;
+		for (i = 0; i < 4; i++) { if (next[i] == cur) break; }
+		i = (i + 1) % 4;
+		AudioPWM_SetHarmony(next[i]);
+	} break;
+	case '+':
+	case '=':
+	{
+		uint8_t v = AudioPWM_GetVolume();
+		if (v < 100) AudioPWM_SetVolume(v + 10);
+	} break;
+	case '-':
+	case '_':
+	{
+		int8_t v = (int8_t)AudioPWM_GetVolume();
+		if (v > 0) { v -= 10; if (v < 0) v = 0; AudioPWM_SetVolume((uint8_t)v); }
+	} break;
+	default: break;
+	}
+}
+
+void USART1_IRQHandler(void)
 {
 	if (USART_GetITStatus(USART1, USART_IT_IDLE) != RESET)
 	{
@@ -35,7 +65,13 @@ __weak void USART1_IRQHandler(void)
 		DMA_Cmd(DMA1_Channel5, DISABLE);
 		received = STREAM_PKT_SIZE - DMA_GetCurrDataCounter(DMA1_Channel5);
 
-		if (received >= STREAM_PKT_SIZE)
+		/* 单字节命令 */
+		if (received == 1 && rx_buf[0] != STREAM_SYNC0)
+		{
+			_process_cmd(rx_buf[0]);
+		}
+		/* 完整视频帧 */
+		else if (received >= STREAM_PKT_SIZE)
 		{
 			if (rx_buf[0] == STREAM_SYNC0 && rx_buf[1] == STREAM_SYNC1)
 			{
@@ -48,7 +84,13 @@ __weak void USART1_IRQHandler(void)
 					if (!music_started)
 					{
 						music_started = 1;
+#ifdef BAD_APPLE_CHORD_COUNT
+						AudioPWM_PlayChord(bad_apple_score, BAD_APPLE_CHORD_COUNT);
+#elif defined(BAD_APPLE_NOTE_COUNT)
 						AudioPWM_PlayScore(bad_apple_score, BAD_APPLE_NOTE_COUNT);
+#else
+						AudioPWM_PlayScore(bad_apple_score, BAD_APPLE_SCORE_NOTE_COUNT);
+#endif
 					}
 				}
 				if (USART_GetFlagStatus(USART1, USART_FLAG_TXE) != RESET)

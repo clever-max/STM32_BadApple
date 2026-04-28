@@ -1,16 +1,19 @@
 /**
- * audio_pwm.h - 非阻塞蜂鸣器驱动（模仿 Bad Apple Buzzer 架构）
+ * audio_pwm.h - 非阻塞蜂鸣器驱动（三蜂鸣器版，真和弦）
  *
- * 引脚：PA0
- * 原理：TIM3 中断翻转 PA0 → 产生任意频率方波 → 非阻塞！
- *       主循环调用 AudioPWM_Update() 切换音符
+ * 引脚：PA0 (TIM3), PA1 (TIM2), PA3 (TIM1)
+ * 原理：TIM3/TIM2/TIM1 Update 中断位翻转 GPIO → 任意频率方波
+ *       主循环调用 AudioPWM_Update() 切换和弦
+ *
+ * 声道模式: VOX_1=仅PA0, VOX_2=PA0+PA1, VOX_3=三声道
  */
+
 #ifndef __AUDIO_PWM_H
 #define __AUDIO_PWM_H
 
 #include <stdint.h>
 
-/* 音符定义——直接存频率 */
+/* 音符频率常量 */
 #define NOTE_PAUSE  0
 #define NOTE_C4   262
 #define NOTE_CS4  277
@@ -49,32 +52,57 @@
 #define NOTE_AS6 1865
 #define NOTE_B6  1976
 
+/* 单音结构体 (兼容旧格式) */
 typedef struct {
-    uint16_t freq;  /* Hz, 0 = 休止 */
-    uint16_t dur;   /* ms */
+    uint16_t freq;
+    uint16_t dur;
 } MusicNote;
 
+/* 三和弦结构体 (新格式, convert_score.py --voices 3) */
+typedef struct {
+    uint16_t f0;  /* PA0 主旋律, 0=静音 */
+    uint16_t f1;  /* PA1 第二声部, 0=静音 */
+    uint16_t f2;  /* PA3 第三声部, 0=静音 */
+    uint16_t dur; /* ms */
+} MusicChord;
+
+/* 兼容旧版和声模式 (当不使用 MusicChord 时) */
+typedef enum {
+    HARMONY_OFF    = 0,
+    HARMONY_UNISON = 1,
+    HARMONY_OCTAVE = 2,
+    HARMONY_FIFTH  = 3,
+} HarmonyMode;
+
+/* 声道数量模式 */
+typedef enum {
+    VOX_1 = 1,  /* 仅 PA0 */
+    VOX_2 = 2,  /* PA0 + PA1 */
+    VOX_3 = 3,  /* PA0 + PA1 + PA3 */
+} VoiceMode;
+
 void AudioPWM_Init(void);
+
+/* 单音 API (兼容) */
 void AudioPWM_StartNote(uint16_t freq_hz);
 void AudioPWM_StopNote(void);
+uint8_t AudioPWM_PlayScore(const MusicNote *score, uint16_t count);
 
-/**
- * @brief  设置全局音量（百分比）
- * @param  vol  0~100, 0=静音, 100=最大
- * @note   内部通过 PWM 占空比实现音量调节
- */
+/* 和弦 API (新) */
+void AudioPWM_StartChord(const MusicChord *chord);
+uint8_t AudioPWM_PlayChord(const MusicChord *chords, uint16_t count);
+
+/* 通用 */
+uint8_t AudioPWM_IsPlaying(void);
+void    AudioPWM_Update(void);
+
 void    AudioPWM_SetVolume(uint8_t vol);
 uint8_t AudioPWM_GetVolume(void);
 
-/**
- * @brief  非阻塞音符播放器
- * @param  score  音符数组
- * @param  count  音符数量
- * @note   在 main 循环中反复调用, 自动推进
- *         返回非零表示正在播放, 返回 0 表示播完
- */
-uint8_t AudioPWM_PlayScore(const MusicNote *score, uint16_t count);
-uint8_t AudioPWM_IsPlaying(void);
-void    AudioPWM_Update(void);
+void    AudioPWM_SetHarmony(HarmonyMode mode);
+HarmonyMode AudioPWM_GetHarmony(void);
+
+void    AudioPWM_SetVoiceMode(VoiceMode mode);
+VoiceMode AudioPWM_GetVoiceMode(void);
 
 #endif

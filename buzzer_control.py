@@ -9,6 +9,7 @@ buzzer_control.py — STM32 蜂鸣器串口遥控器
   2  → 小星星
   3  → Bad Apple 完整版
   s  → 停止当前播放
+  h  → 切换和声模式 (OFF/UNI/OCT/5TH)
   q  → 退出程序
 
 使用:  python buzzer_control.py [COM端口]
@@ -60,7 +61,7 @@ else:
 # ── 串口相关 ──
 BAUDRATE = 115200
 TIMEOUT  = 0.05   # 串口读取超时 (秒)，50ms 足够非阻塞轮询
-CMD_CHARS = {'1', '2', '3', 's', 'q', '+', '=', '-', '_'}
+CMD_CHARS = {'1', '2', '3', 's', 'q', '+', '=', '-', '_', 'h', 'H'}
 
 
 def list_ports():
@@ -138,8 +139,9 @@ def interactive(ser):
     print("=" * 40)
     print("  [1] 音阶测试    (C4 → C5 → C4)")
     print("  [2] 小星星      (Twinkle Twinkle)")
-    print("  [3] Bad Apple   (827 音符)")
+    print("  [3] Bad Apple   (739 音符)")
     print("  [+]/[=] 音量+10%    [-] 音量-10%")
+    print("  [h] 切换和声   (OFF→UNI→OCT→5TH)")
     print("  [s] 停止播放    [q] 退出")
     print("=" * 40)
     print("提示: 直接按键即可发送，无需回车")
