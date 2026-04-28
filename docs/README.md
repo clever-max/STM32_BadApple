@@ -1,9 +1,10 @@
-# STM32F103C8 0.96寸 OLED 视频播放项目
+# STM32F103C8 0.96寸 OLED 视频 + 三蜂鸣器音频播放项目
 
-基于 STM32F103C8T6 的 0.96 寸 OLED 显示屏（4 针 I2C 接口）项目，支持两种视频播放模式：
+基于 STM32F103C8T6 的 0.96 寸 OLED 显示屏（4 针 I2C 接口）项目，支持三种模式：
 
 - **Flash 模式**：视频帧预存 MCU Flash，独立播放（≤60帧，\~6秒）
-- **串口流模式**：PC 通过 USB 转串口实时发送帧数据 → 任意时长视频 + 高帧率
+- **串口流模式（视频+音频同步）**：PC 通过 USB 转串口实时发送帧 → 任意时长视频 + 三蜂鸣器真和弦音频
+- **蜂鸣器测试模式**：串口菜单控制蜂鸣器独立播放乐谱
 
 ***
 
@@ -17,6 +18,7 @@
 | **显示屏**     | 0.96 寸 OLED，分辨率 128×64（SSD1306 驱动）     |
 | **通信接口**    | 软件 I2C（SCL=PB8, SDA=PB9, 水平寻址模式单次写入优化） |
 | **串口（流模式）** | USART1（TX=PA9, RX=PA10）+ DMA           |
+| **蜂鸣器**     | 3× 无源蜂鸣器（PA0/PA1/PA3，定时器位翻转驱动）    |
 | **开发环境**    | Keil MDK（ARM Compiler V5）              |
 
 ***
@@ -124,6 +126,118 @@ python pc_streamer.py
 
 - **Windows**：设备管理器 → 端口(COM和LPT) → 查找 `USB-SERIAL CH340` 或 `STLink Virtual COM Port`
 - **Linux**：`ls /dev/ttyUSB*` 或 `ls /dev/ttyACM*`
+
+***
+
+## 模式三：串口流 + 蜂鸣器音频同步（v2.0 新增）
+
+### 音频驱动架构
+
+```
+┌──────────────────────────────────────────────────────┐
+│  三蜂鸣器真和弦: 无 DAC、无 PWM 音频、无软件混音         │
+│                                                      │
+│  TIM3 ── Update ISR ── 位翻转 PA0 ── 蜂鸣器1 (高声部)  │
+│  TIM2 ── Update ISR ── 位翻转 PA1 ── 蜂鸣器2 (中声部)  │
+│  TIM1 ── Update ISR ── 位翻转 PA3 ── 蜂鸣器3 (低声部)  │
+│  TIM4 ── Update ISR ── 1ms 全局计数器                  │
+│                                                      │
+│  时钟: 72MHz / 72(PSC) = 1MHz → ARR 频率控制          │
+│  音量: 占空比 (note_volume/100 控制 LOW 段)            │
+└──────────────────────────────────────────────────────┘
+```
+
+### 为什么不用 PWM DAC？
+
+PWM + RC 低通 + 三极管放大可以实现 8-bit 音质（如文档 `PWM音频播放方案规划.md`），但本项目选择了另一条路：
+
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| **PWM DAC (原方案)** | 音质好，可播任意波形 | 需要 RC 滤波电路、占用 TIM 通道、单声道 |
+| **位翻转 + 多蜂鸣器 (实际)** | 真和弦、电路极简(无滤波)、可独立控制每个音高 | 只能方波(无泛音控制)、蜂鸣器越多 I/O 越多 |
+
+对于 Bad Apple 这种以旋律+和弦为主的音乐，**三蜂鸣器真和弦**的实际听感远优于单声道 8-bit DAC。
+
+### 乐谱数据格式
+
+两种数据结构共存：
+
+```c
+// 单音格式 (旧，兼容 convert_score.py --voices 1)
+typedef struct { uint16_t freq; uint16_t dur; } MusicNote;
+
+// 三和弦格式 (新，convert_score.py --voices 3)
+typedef struct { uint16_t f0, f1, f2; uint16_t dur; } MusicChord;
+//                PA0=高声部  PA1=中声部  PA3=低声部
+```
+
+`video_stream.c` 中自动检测宏切换调用：
+```c
+#ifdef BAD_APPLE_CHORD_COUNT
+    AudioPWM_PlayChord(bad_apple_score, BAD_APPLE_CHORD_COUNT);   // 三声道
+#else
+    AudioPWM_PlayScore(bad_apple_score, BAD_APPLE_NOTE_COUNT);   // 单声道
+#endif
+```
+
+### 音画同步原理
+
+音画同步不是靠精确计时，而是靠**事件驱动**：
+
+```
+PC 发送第 1 帧视频 → STM32 收到 → IDLE 中断中:
+    1. memcpy 视频到显存
+    2. 检测 music_started==0 → AudioPWM_PlayScore() 启动蜂鸣器
+    3. 发送 ACK(0xAC)
+
+PC 收到 ACK → 发送第 2 帧 → STM32 显示 + 蜂鸣器继续…
+```
+
+蜂鸣器乐谱时间线独立于视频帧率——`AudioPWM_Update()` 用 TIM4 的 1ms 计时器推进音符，视频用 `VideoStream_Process()` 同步。两者在同一 `while(1)` 循环中交替执行，互不阻塞。
+
+### 播放中热切换
+
+MCU 端通过 USART IDLE 中断接收单字节命令（1 字节 ≠ 0xAA 即判为命令）：
+
+| 命令 | MCU 操作 |
+|------|---------|
+| `h` | 循环和声 OFF→UNI→OCT→5TH (仅单音模式有效) |
+| `+`/`=` | 音量 +10% |
+| `-`/`_` | 音量 -10% |
+| PA2 按钮 | 声道数切换 1CH→2CH→3CH (和弦模式) |
+
+PC 端 `pc_streamer.py` v2.1 在每个视频帧发送之前检查键盘，有按键则插入一个单字节命令。
+
+### 中断优先级规划
+
+| 中断 | 抢占优先级 : 子优先级 | 用途 |
+|------|:---:|------|
+| USART1_IRQn | 1 : 0 | 视频 DMA 接收，最高优先 |
+| TIM3_IRQn | 2 : 0 | PA0 高频方波 |
+| TIM2_IRQn | 2 : 1 | PA1 高频方波 |
+| TIM1_UP_IRQn | 2 : 2 | PA3 高频方波 |
+| TIM4_IRQn | 3 : 0 | 1ms 计时 |
+| SysTick | — | ms_counter（主循环用） |
+
+> 三位翻转 ISR 同为抢占优先级 2，靠子优先级解决竞争。三蜂鸣器同时发 C6(~1047Hz) 时，每个 ISR 触发约 2094 次/秒（每周期翻转 2 次），总计约 6282 次/秒——Cortex-M3 @ 72MHz 完全能处理。
+
+### MIDI 转乐谱工具
+
+```
+convert_score.py 输入格式:
+  .mid  → mido 库解析 → 时间切片算法 → MusicNote[] / MusicChord[]
+  .json → [["C4",378],...]
+  .csv  → 每行 "频率,时长"
+  .c    → music_notes[] + music_durs[] 双数组
+
+关键参数:
+  --voices 1|2|3    输出声道数
+  --poly highest|lowest  单声道时的多音选择策略
+  --track N         只解析指定 MIDI track
+  -o 输出路径       -n 数组名称
+```
+
+时间切片算法：逐 tick 断言 active 音符集 → 从高到低取 N 个 → 生成 MusicChord。不足 N 个声部则对应频位置补 0（静音）。
 
 ***
 
