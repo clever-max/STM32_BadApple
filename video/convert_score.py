@@ -144,7 +144,7 @@ def parse_midi(filepath, track_idx=None, poly_mode="highest", voices=1):
     """解析 MIDI 文件 → [(freq, dur_ms), ...] 或 [(freqs_tuple, dur_ms), ...]
 
     使用时间切片算法：在任意 tick 时刻选择当前应播放的频率，
-    正确插入休止符。
+    正确插入休止符。支持动态变速（ritardando/accelerando）。
 
     voices: 输出声道数 (1/2/3)
         voices=1 → [(freq, dur), ...]  (兼容旧格式 MusicNote[])
@@ -162,10 +162,9 @@ def parse_midi(filepath, track_idx=None, poly_mode="highest", voices=1):
 
     mid = mido.MidiFile(filepath)
     ticks_per_beat = mid.ticks_per_beat
-    tempo = 500000
 
     events = []
-    abs_tick = 0
+    tempo_map = [(0, 500000)]  # (tick, tempo_us_per_beat)
 
     for i, track in enumerate(mid.tracks):
         if track_idx is not None and i != track_idx:
@@ -174,7 +173,7 @@ def parse_midi(filepath, track_idx=None, poly_mode="highest", voices=1):
         for msg in track:
             abs_tick += msg.time
             if msg.type == "set_tempo":
-                tempo = msg.tempo
+                tempo_map.append((abs_tick, msg.tempo))
             elif msg.type == "note_on" and msg.velocity > 0:
                 events.append((abs_tick, msg.note, "on"))
             elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
@@ -182,21 +181,40 @@ def parse_midi(filepath, track_idx=None, poly_mode="highest", voices=1):
 
     # note_off 排前 (先释放再按下，避免同一 tick on/off 误判重叠)
     events.sort(key=lambda e: (e[0], 0 if e[2] == "off" else 1))
+    tempo_map.sort(key=lambda x: x[0])
 
-    def ticks_to_ms(ticks):
-        return int(ticks * tempo / (ticks_per_beat * 1000))
+    # 预计算所有切片 tick 的绝对 ms（只除一次，避免累积截断误差）
+    all_ticks = sorted(set([0] + [e[0] for e in events]))
+    tick_to_ms_cache = {}
+    ti = 0
+    prev_tick = 0
+    prev_tempo = 500000
+    total_us = 0
+    for target_tick in all_ticks:
+        while ti < len(tempo_map) and tempo_map[ti][0] <= target_tick:
+            tm_tick, tm_tempo = tempo_map[ti]
+            seg = tm_tick - prev_tick
+            if seg > 0:
+                total_us += seg * prev_tempo
+            prev_tick = tm_tick
+            prev_tempo = tm_tempo
+            ti += 1
+        seg = target_tick - prev_tick
+        tick_to_ms_cache[target_tick] = int(round((total_us + seg * prev_tempo) / (ticks_per_beat * 1000)))
+
 
     if voices <= 1:
-        return _parse_midi_time_slice(events, ticks_to_ms, poly_mode)
+        return _parse_midi_time_slice(events, poly_mode, tick_to_ms_cache)
     else:
-        return _parse_midi_time_slice_multi(events, ticks_to_ms, voices)
+        return _parse_midi_time_slice_multi(events, voices, tick_to_ms_cache)
 
 
-def _parse_midi_time_slice(events, ticks_to_ms, poly_mode):
+def _parse_midi_time_slice(events, poly_mode, tick_to_ms):
     """时间切片解析：逐 tick 输出 1 个频率（含休止符）
 
     对单声道 MIDI，一次输出 1 个 (freq, dur)。
     对多音 MIDI，只选最高/最低音。
+    tick_to_ms: dict{abs_tick: abs_ms}
     """
     active = set()
     last_freq = -1
@@ -227,7 +245,7 @@ def _parse_midi_time_slice(events, ticks_to_ms, poly_mode):
         cur_freq = midi_pitch_to_freq(chosen) if chosen is not None else 0
 
         if cur_freq != last_freq and last_freq >= 0:
-            dur_ms = ticks_to_ms(tick - cur_start_tick)
+            dur_ms = tick_to_ms[tick] - tick_to_ms[cur_start_tick]
             if dur_ms > 0:
                 notes_result.append((last_freq, dur_ms))
             cur_start_tick = tick
@@ -239,18 +257,19 @@ def _parse_midi_time_slice(events, ticks_to_ms, poly_mode):
         prev_tick = tick
 
     if last_freq >= 0 and events:
-        dur_ms = ticks_to_ms(events[-1][0] - cur_start_tick)
+        dur_ms = tick_to_ms[events[-1][0]] - tick_to_ms[cur_start_tick]
         if dur_ms > 0:
             notes_result.append((last_freq, dur_ms))
 
     return notes_result
 
 
-def _parse_midi_time_slice_multi(events, ticks_to_ms, num_voices):
+def _parse_midi_time_slice_multi(events, num_voices, tick_to_ms):
     """多声道时间切片：逐 tick 输出 num_voices 个频率 → [(freqs_tuple, dur), ...]
 
     每个切片时刻，从 active 集合中选 num_voices 个音，
     按 pitch 从高到低排列，不足则补 0（休止）。
+    tick_to_ms: dict{abs_tick: abs_ms}
     """
     active = set()
     last_freqs = None
@@ -281,7 +300,7 @@ def _parse_midi_time_slice_multi(events, ticks_to_ms, num_voices):
         )
 
         if cur_freqs != last_freqs and last_freqs is not None:
-            dur_ms = ticks_to_ms(tick - cur_start_tick)
+            dur_ms = tick_to_ms[tick] - tick_to_ms[cur_start_tick]
             if dur_ms > 0:
                 notes_result.append((last_freqs, dur_ms))
             cur_start_tick = tick
@@ -293,7 +312,7 @@ def _parse_midi_time_slice_multi(events, ticks_to_ms, num_voices):
         prev_tick = tick
 
     if last_freqs is not None and events:
-        dur_ms = ticks_to_ms(events[-1][0] - cur_start_tick)
+        dur_ms = tick_to_ms[events[-1][0]] - tick_to_ms[cur_start_tick]
         if dur_ms > 0:
             notes_result.append((last_freqs, dur_ms))
 
@@ -303,6 +322,66 @@ def _parse_midi_time_slice_multi(events, ticks_to_ms, num_voices):
 def midi_pitch_to_freq(pitch):
     """MIDI note number → 频率 Hz"""
     return int(440.0 * (2 ** ((pitch - 69) / 12.0)) + 0.5)
+
+
+# ============================================================
+# 频率自适应转换（解决蜂鸣器低频表现差的问题）
+# ============================================================
+def transpose_chords(chords, min_freq, max_freq):
+    """对每个和弦做自适应频率提升 + 碰撞消解
+
+    chords: [((f0,f1,f2,...), dur), ...]
+    返回:   [((f0',f1',f2',...), dur), ...]
+    """
+    if min_freq <= 0 and max_freq <= 0:
+        return chords
+
+    min_f = min_freq if min_freq > 0 else 1
+    max_f = max_freq if max_freq > 0 else 99999
+
+    result = []
+    for freqs, dur in chords:
+        new_freqs = _transpose_chord(freqs, min_f, max_f)
+        result.append((new_freqs, dur))
+    return result
+
+
+def _transpose_chord(freqs, min_freq, max_freq):
+    """自适应多声部频率提升 + 碰撞消解"""
+    num_voices = len(freqs)
+    result = list(freqs)
+
+    # Step 1: 各声部独立升至 [min_freq, max_freq]
+    for i, f in enumerate(result):
+        if f == 0:
+            continue
+        while f < min_freq:
+            f *= 2
+        while f > max_freq:
+            f //= 2
+        result[i] = f
+
+    # Step 2: 碰撞消解 — 将 (原始声部索引, 频率) 按频率降序
+    non_zero = [(i, result[i]) for i in range(num_voices) if result[i] > 0]
+    if len(non_zero) <= 1:
+        return tuple(result)
+
+    changed = True
+    while changed:
+        changed = False
+        non_zero.sort(key=lambda x: x[1], reverse=True)
+        for j in range(len(non_zero) - 1):
+            if non_zero[j][1] == non_zero[j + 1][1]:
+                # 碰撞！取较低索引（较低声部位）升八度
+                idx_low = non_zero[j + 1][0]
+                new_f = result[idx_low] * 2
+                if new_f <= max_freq:
+                    result[idx_low] = new_f
+                    changed = True
+                non_zero = [(i, result[i]) for i in range(num_voices) if result[i] > 0]
+                break
+
+    return tuple(result)
 
 
 # ============================================================
@@ -411,6 +490,12 @@ def main():
                         help="多音选择: highest(取最高音,默认)/lowest(取最低音)")
     parser.add_argument("--voices", type=int, choices=[1, 2, 3], default=1,
                         help="输出声道数: 1=单音MusicNote, 2/3=多音MusicChord (默认: 1)")
+    parser.add_argument("--min-freq", type=int, default=200,
+                        help="蜂鸣器最低清晰频率(Hz), 低于此值的音自动升八度 (默认: 200)")
+    parser.add_argument("--max-freq", type=int, default=3000,
+                        help="蜂鸣器最高有效频率(Hz), 高于此值的音自动降八度 (默认: 3000)")
+    parser.add_argument("--no-transpose", action="store_true",
+                        help="禁用频率自适应转换 (保留原始频率)")
     parser.add_argument("--count-only", action="store_true",
                         help="只统计音符数，不生成文件")
     args = parser.parse_args()
@@ -441,6 +526,12 @@ def main():
     # 多声道输出的是和弦列表
     if args.voices > 1:
         chords = result  # [((f0,f1,f2), dur), ...]
+
+        # 频率自适应转换（默认开启，--no-transpose 关闭）
+        if not args.no_transpose and (args.min_freq > 0 or args.max_freq > 0):
+            chords = transpose_chords(chords, args.min_freq, args.max_freq)
+            print(f"频率自适应: min={args.min_freq}Hz, max={args.max_freq}Hz")
+
         n = len(chords)
     else:
         notes = result  # [(freq, dur), ...]
@@ -470,10 +561,14 @@ def main():
     # 生成
     input_name = Path(input_file).name
     if args.voices > 1:
+        transpose_note = ""
+        if not args.no_transpose:
+            transpose_note = f"\n * 频率自适应: min={args.min_freq}Hz, max={args.max_freq}Hz"
         header_comment = (
             f"{input_name} → STM32 MusicChord\n"
             f" * 共 {n} 个和弦, {args.voices} 声道\n"
             f" * 由 convert_score.py --voices {args.voices} 自动生成"
+            f"{transpose_note}"
         )
         generate_chord_header(chords, args.output, args.name,
                               header_comment, args.voices)

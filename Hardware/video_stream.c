@@ -84,8 +84,8 @@ void USART1_IRQHandler(void)
 					if (!music_started)
 					{
 						music_started = 1;
-#ifdef BAD_APPLE_CHORD_COUNT
-						AudioPWM_PlayChord(bad_apple_score, BAD_APPLE_CHORD_COUNT);
+#if defined(BAD_APPLE_SCORE_CHORD_COUNT)
+						AudioPWM_PlayChord(bad_apple_score, BAD_APPLE_SCORE_CHORD_COUNT);
 #elif defined(BAD_APPLE_NOTE_COUNT)
 						AudioPWM_PlayScore(bad_apple_score, BAD_APPLE_NOTE_COUNT);
 #else
