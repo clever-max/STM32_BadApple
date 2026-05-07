@@ -60,7 +60,7 @@ else:
 # ── 串口相关 ──
 BAUDRATE = 115200
 TIMEOUT  = 0.05
-SONG_COUNT = 2   # 可在运行时修改
+SONG_COUNT = 4   # 须与 songs.h 中的 song_table[] 条目数一致
 
 HELP_TEXT = """
 ╔══════════════════════════════════════╗
@@ -122,10 +122,42 @@ def reader_thread(ser, stop_event):
             break
 
 
+HARM_NAMES = ["OFF", "UNI", "OCT", "5TH"]
+VOX_NAMES  = ["1CH", "2CH", "3CH"]
+
+class Track:
+    """本地状态跟踪：模拟 MCU 端变量，每次命令后回显"""
+    def __init__(self):
+        self.harmony = 1    # 0=OFF, 1=UNI, 2=OCT, 3=5TH
+        self.voice   = 2    # 0=1CH, 1=2CH, 2=3CH
+        self.volume  = 50
+        self.cur_song = 1   # 1-based
+t = Track()
+
+def _echo(cmd):
+    """发送命令后回显状态"""
+    if cmd in ('h', 'H'):
+        print(f"  和声: {HARM_NAMES[t.harmony]}", flush=True)
+    elif cmd in ('v', 'V'):
+        print(f"  声道: {VOX_NAMES[t.voice]}", flush=True)
+    elif cmd in ('+', '=', '-', '_'):
+        print(f"  音量: {t.volume}%", flush=True)
+    elif cmd in ('n', 'N', 'p', 'P'):
+        print(f"  当前: 第{t.cur_song}首", flush=True)
+    elif cmd in ('s', 'S'):
+        print(f"  已停止", flush=True)
+    elif cmd == ' ':
+        print(f"  暂停/继续", flush=True)
+    elif cmd in ('l', 'L'):
+        print(f"  列出歌曲中...", flush=True)
+    elif cmd == '\r':
+        print(f"  播放: 第{t.cur_song}首", flush=True)
+
 def interactive(ser):
+    global t
     stop_event = threading.Event()
-    t = threading.Thread(target=reader_thread, args=(ser, stop_event), daemon=True)
-    t.start()
+    thr = threading.Thread(target=reader_thread, args=(ser, stop_event), daemon=True)
+    thr.start()
 
     print(HELP_TEXT)
     print(f"  (共 {SONG_COUNT} 首歌)")
@@ -139,7 +171,11 @@ def interactive(ser):
         # 数字缓冲超时自动发送 Enter
         if num_acc and (now - num_last) > 1.0:
             ser.write(b'\r')
+            song_num = int(num_acc)
+            if 1 <= song_num <= SONG_COUNT:
+                t.cur_song = song_num
             print(f"\r  » 选歌: {num_acc} (自动确认)", flush=True)
+            _echo('\r')
             num_acc = ""
 
         if _kbhit():
@@ -174,7 +210,11 @@ def interactive(ser):
             if ch in ('\r', '\n'):
                 if num_acc:
                     ser.write(b'\r')
+                    song_num = int(num_acc)
+                    if 1 <= song_num <= SONG_COUNT:
+                        t.cur_song = song_num
                     print(f"\r  » 选歌: {num_acc}", flush=True)
+                    _echo('\r')
                     num_acc = ""
                 continue
 
@@ -184,19 +224,29 @@ def interactive(ser):
                 print("\n退出。")
                 break
 
-            # 非数字命令: 清数字缓冲并发命令
+            # 非数字命令: 清缓冲, 发命令, 更新本地状态, 回显
             if num_acc:
                 num_acc = ""
             ser.write(ch.encode())
-            display = ch.replace('\r', '<CR>').replace('\n', '<LF>').replace(' ', '<Space>')
-            print(f"\r  » 发送: '{display}'   ", end="", flush=True)
-            # 换行显示
-            print()
+            _echo(ch)
+            # 更新本地状态
+            if ch in ('h', 'H'):
+                t.harmony = (t.harmony + 1) % 4
+            elif ch in ('v', 'V'):
+                t.voice = (t.voice + 1) % 3
+            elif ch in ('+', '='):
+                if t.volume < 100: t.volume += 10
+            elif ch in ('-', '_'):
+                if t.volume > 0: t.volume -= 10
+            elif ch in ('n', 'N'):
+                t.cur_song = t.cur_song + 1 if t.cur_song < SONG_COUNT else 1
+            elif ch in ('p', 'P'):
+                t.cur_song = t.cur_song - 1 if t.cur_song > 1 else SONG_COUNT
 
         time.sleep(0.02)
 
     stop_event.set()
-    t.join(timeout=0.5)
+    thr.join(timeout=0.5)
 
 
 def main():

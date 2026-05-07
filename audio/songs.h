@@ -1,6 +1,9 @@
 /**
  * songs.h - 歌曲注册表
- * 添加新歌：1. 创建 music_score_xxx.h  2. 在此注册
+ * 添加新歌：
+ *   1. python convert_to_audio.py song.mid -n "SongName"
+ *   2. 在此添加 #include 和 song_table 条目
+ *   (无须手动更新计数——sizeof 自动计算)
  */
 #ifndef __SONGS_H__
 #define __SONGS_H__
@@ -8,6 +11,7 @@
 #include "audio_pwm.h"
 #include "music_score_bad_apple.h"
 #include "music_score_wohuainiande.h"
+#include "music_score_tori_no_uta.h"
 #include "music_score____.h"
 
 typedef enum {
@@ -22,12 +26,13 @@ typedef struct {
     uint16_t      count;
 } SongEntry;
 
-#define SONG_COUNT  3
+#define SONG_COUNT  (sizeof(song_table) / sizeof(song_table[0]))
 
-static const SongEntry song_table[SONG_COUNT] = {
-    {"Bad Apple",    SONG_TYPE_CHORD, song_bad_apple,    SONG_BAD_APPLE_CHORD_COUNT},
-    {"Wo Huai Nian De", SONG_TYPE_CHORD, song_wohuainiande, SONG_WOHUAINIANDE_CHORD_COUNT},
-    {"Lan Hua Cao",         SONG_TYPE_CHORD, song____,          SONG_____CHORD_COUNT},
+static const SongEntry song_table[] = {
+    {"Bad Apple",     SONG_TYPE_CHORD, song_bad_apple,     SONG_BAD_APPLE_CHORD_COUNT},
+    {"Wo Huai Nian",  SONG_TYPE_CHORD, song_wohuainiande,  SONG_WOHUAINIANDE_CHORD_COUNT},
+    {"Tori no Uta",   SONG_TYPE_CHORD, song_tori_no_uta,   SONG_TORI_NO_UTA_CHORD_COUNT},
+    {"Lan Hua Cao",   SONG_TYPE_CHORD, song____,            SONG_____CHORD_COUNT},
 };
 
 #endif /* __SONGS_H__ */
