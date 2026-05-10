@@ -29,7 +29,7 @@ JLinkSettings.ini
 05-商家资料/
 
 # ==== 视频源文件 ====
-video/*.mp4
+
 
 # ==== Python ====
 __pycache__/
@@ -39,3 +39,11 @@ __pycache__/
 # ==== 杂项 ====
 *.bak
 *.tmp
+
+.trae/rules
+
+.trae\documents\方案D自适应频率提升计划.md
+.trae\documents\audio目录音乐播放器计划.md
+.trae\documents\F103RCT6_8路蜂鸣器迁移计划.md
+.trae\documents\score_converter_plan.md
+.trae\documents\v2.2阶段性Git提交计划.md

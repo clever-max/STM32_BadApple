@@ -25,8 +25,37 @@ def midi_pitch_to_freq(pitch):
     return int(440.0 * (2 ** ((pitch - 69) / 12.0)) + 0.5)
 
 
-def parse_midi(filepath, track_idx=None, voices=3):
-    """解析 MIDI → [((f0,f1,f2,...), dur_ms), ...] 支持动态变速"""
+def detect_priority_range(events):
+    """扫一遍所有 note_on 事件，返回音符最密集的半音区间 [low, high) MIDI note"""
+    from collections import Counter
+    bins = Counter()
+    for tick, pitch, etype in events:
+        if etype == "on":
+            octave_start = (pitch // 12) * 12
+            bins[octave_start] += 1
+    if not bins:
+        return 0, 128  # 全范围
+    best_octave = max(bins, key=bins.get)
+    return best_octave, best_octave + 12
+
+
+def _select_voices(active, voices, priority_lo, priority_hi):
+    """从 active 集合中选 voices 个音符，优先保留 [priority_lo, priority_hi) 范围内的"""
+    in_range = sorted([n for n in active if priority_lo <= n < priority_hi], reverse=True)
+    out_range = sorted([n for n in active if n < priority_lo or n >= priority_hi], reverse=True)
+    # 先取 priority 区间内的（最多 voices 个），不够再从区间外补
+    selected = in_range[:voices]
+    remaining = voices - len(selected)
+    if remaining > 0:
+        selected += out_range[:remaining]
+    return sorted(selected, reverse=True)  # 最终仍按音高排列 (f0最高→fN最低)
+
+
+def parse_midi(filepath, track_idx=None, voices=3, priority_range=None):
+    """解析 MIDI → [((f0,f1,f2,...), dur_ms), ...] 支持动态变速
+
+    priority_range: (lo, hi) MIDI note range tuple. None = auto-detect.
+    """
     import mido
 
     mid = mido.MidiFile(filepath)
@@ -69,7 +98,16 @@ def parse_midi(filepath, track_idx=None, voices=3):
         seg = t - pk
         tick_to_ms[t] = int(round((total_us + seg * pt) / (ticks_per_beat * 1000)))
 
-    # 时间切片：从 active 集合中选 voices 个最高音
+    # 检测主旋律区间（自动）
+    if priority_range is None:
+        priority_range = detect_priority_range(events)
+    plo, phi = priority_range
+    oct_lo = plo // 12 if plo == 0 else (plo // 12) - 1
+    oct_hi = phi // 12 if phi == 0 else (phi // 12) - 1
+    names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+    print(f"  主旋律区间: {names[plo%12]}{oct_lo} – {names[(phi-1)%12]}{oct_hi}")
+
+    # 时间切片：优先保留 priority_range 内的音符
     active = set()
     last_freqs = None
     cur_start = 0
@@ -87,9 +125,9 @@ def parse_midi(filepath, track_idx=None, voices=3):
             i += 1
         if tick == prev_t:
             continue
-        sorted_notes = sorted(active, reverse=True)[:voices]
+        selected = _select_voices(active, voices, plo, phi)
         cur_freqs = tuple(
-            midi_pitch_to_freq(sorted_notes[j]) if j < len(sorted_notes) else 0
+            midi_pitch_to_freq(selected[j]) if j < len(selected) else 0
             for j in range(voices)
         )
         if cur_freqs != last_freqs and last_freqs is not None:
@@ -211,6 +249,10 @@ def main():
                         help="最高有效频率 Hz (默认: 3000)")
     parser.add_argument("--no-transpose", action="store_true",
                         help="禁用频率自适应转换")
+    parser.add_argument("--priority-range", default=None,
+                        help="手动指定主旋律区间 MIDI音符号范围, 如 60:72 (C4-C5). 默认自动检测")
+    parser.add_argument("--no-priority", action="store_true",
+                        help="禁用智能声部选择 (回退到只要最高音)")
     parser.add_argument("--count-only", action="store_true",
                         help="只统计，不生成文件")
     args = parser.parse_args()
@@ -226,7 +268,21 @@ def main():
         sys.exit(1)
 
     print(f"解析 MIDI: {args.input_file}")
-    chords = parse_midi(args.input_file, args.track, args.voices)
+
+    # 主旋律区间
+    if args.no_priority:
+        priority_range_specified = (0, 128)  # 全范围 = 只用最高音
+    elif args.priority_range:
+        try:
+            plo, phi = args.priority_range.split(":")
+            priority_range_specified = (int(plo), int(phi))
+        except:
+            print("--priority-range 格式错误，应为 起始:结束 如 60:72")
+            sys.exit(1)
+    else:
+        priority_range_specified = None  # auto-detect
+
+    chords = parse_midi(args.input_file, args.track, args.voices, priority_range_specified)
 
     if not args.no_transpose:
         chords = transpose_chords(chords, args.min_freq, args.max_freq)
@@ -238,7 +294,7 @@ def main():
     if args.count_only:
         print(f"和弦数: {n}")
         print(f"总时长: {total_s:.1f}s = {total_s / 60:.2f}min")
-        voice_usage = [0, 0, 0, 0]
+        voice_usage = [0] * (args.voices + 1)
         for f, _ in chords:
             v = sum(1 for x in f if x > 0)
             voice_usage[v] += 1

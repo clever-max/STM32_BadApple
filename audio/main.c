@@ -13,11 +13,118 @@
 #include "audio_pwm.h"
 #include "songs.h"
 
-/* ── 按键 ── */
-#define BTN_PORT   GPIOA
-#define BTN_PIN    GPIO_Pin_2
+/* ── 多按钮定义 ── */
+#define BTN_LONG_MS     800   /* 长按阈值 */
 
-/* ── SysTick ── */
+typedef enum {
+    BTN_ACT_NEXT,      /* PB3 short: 下一首 */
+    BTN_ACT_PREV,      /* PB6 short: 上一首 */
+    BTN_ACT_VOL_UP,    /* PB4 short: 音量+ */
+    BTN_ACT_VOL_DOWN,  /* PB5 short: 音量- */
+    BTN_ACT_PAUSE,     /* PB3 long:  播放/暂停 */
+    BTN_ACT_HARMONY,   /* PB4 long:  切换和声 */
+    BTN_ACT_VOICE,     /* PB5 long:  切换声道 */
+    BTN_ACT_STOP,      /* PB6 long:  停止 */
+} BtnAction;
+
+#define NUM_BTNS  4
+
+typedef struct {
+    uint16_t  pin;
+    BtnAction short_act;
+    BtnAction long_act;
+    uint8_t   prev;
+    uint32_t  press_tick;
+} BtnDef;
+
+static BtnDef g_btns[NUM_BTNS] = {
+    {GPIO_Pin_3, BTN_ACT_NEXT,   BTN_ACT_PAUSE,   1, 0},  /* PB3 */
+    {GPIO_Pin_4, BTN_ACT_VOL_UP, BTN_ACT_HARMONY, 1, 0},  /* PB4 */
+    {GPIO_Pin_5, BTN_ACT_VOL_DOWN, BTN_ACT_VOICE,   1, 0},  /* PB5 */
+    {GPIO_Pin_6, BTN_ACT_PREV,   BTN_ACT_STOP,    1, 0},  /* PB6 */
+};
+
+/* ── 前向声明 ── */
+static uint32_t ms(void);
+static void PlaySong(uint8_t idx);
+static void StopPlay(void);
+static uint8_t cur_song;
+static uint8_t is_playing;
+
+static void _exec_btn(BtnAction act, uint8_t *fr)
+{
+    *fr = 1;
+    switch (act) {
+    case BTN_ACT_NEXT:
+        cur_song = (cur_song + 1) % SONG_COUNT;
+        PlaySong(cur_song); is_playing = 1; break;
+    case BTN_ACT_PREV:
+        cur_song = (cur_song == 0) ? SONG_COUNT - 1 : cur_song - 1;
+        PlaySong(cur_song); is_playing = 1; break;
+    case BTN_ACT_VOL_UP: {
+        uint8_t v = AudioPWM_GetVolume();
+        if (v < 100) AudioPWM_SetVolume(v + 10); break;
+    }
+    case BTN_ACT_VOL_DOWN: {
+        int8_t v = AudioPWM_GetVolume();
+        if (v > 0) { v -= 10; if (v < 0) v = 0; AudioPWM_SetVolume(v); } break;
+    }
+    case BTN_ACT_PAUSE:
+        if (is_playing) { is_playing = 0; AudioPWM_StopNote(); }
+        else { is_playing = 1; PlaySong(cur_song); }
+        break;
+    case BTN_ACT_HARMONY: {
+        HarmonyMode n[4]={HARMONY_OFF,HARMONY_UNISON,HARMONY_OCTAVE,HARMONY_FIFTH};
+        HarmonyMode c=AudioPWM_GetHarmony(); int i;
+        for (i=0;i<4;i++){if(n[i]==c)break;}
+        AudioPWM_SetHarmony(n[(i+1)%4]); break;
+    }
+    case BTN_ACT_VOICE: {
+        VoiceMode cv = AudioPWM_GetVoiceMode();
+        AudioPWM_SetVoiceMode(cv >= VOX_3 ? VOX_1 : (VoiceMode)(cv + 1));
+        break;
+    }
+    case BTN_ACT_STOP:
+        is_playing = 0; AudioPWM_StopNote(); break;
+    }
+}
+
+static void BTN_Init(void) {
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
+    GPIO_PinRemapConfig(GPIO_Remap_SWJ_JTAGDisable, ENABLE);  /* 释放 PB3/PB4 */
+    GPIO_InitTypeDef g;
+    g.GPIO_Speed = GPIO_Speed_50MHz;
+    g.GPIO_Mode  = GPIO_Mode_IPU;
+    for (uint8_t i = 0; i < NUM_BTNS; i++) {
+        g.GPIO_Pin = g_btns[i].pin;
+        GPIO_Init(GPIOB, &g);
+    }
+}
+
+static void BTN_Check(uint8_t *force_redraw) {
+    static uint32_t last_call = 0;
+    if (ms() - last_call < 20) return;
+    last_call = ms();
+
+    for (uint8_t i = 0; i < NUM_BTNS; i++) {
+        BtnDef *b = &g_btns[i];
+        uint8_t cur = (GPIO_ReadInputDataBit(GPIOB, b->pin) == Bit_RESET) ? 0 : 1;
+
+        if (cur == 0 && b->prev == 1) {
+            /* 下降沿：记录按下时间 */
+            b->press_tick = ms();
+        }
+        else if (cur == 1 && b->prev == 0) {
+            /* 上升沿：判断短按还是长按 */
+            uint32_t held = ms() - b->press_tick;
+            if (held >= BTN_LONG_MS)
+                _exec_btn(b->long_act, force_redraw);
+            else
+                _exec_btn(b->short_act, force_redraw);
+        }
+        b->prev = cur;
+    }
+}
 static volatile uint32_t g_ms = 0;
 void SysTick_Handler(void) { g_ms++; }
 static uint32_t ms(void) { return g_ms; }
@@ -230,21 +337,6 @@ static void ProcessCmd(uint8_t c, uint8_t *force_redraw)
     }
 }
 
-/* ── PA2 按键 ── */
-static void BTN_Init(void) {
-    GPIO_InitTypeDef g;
-    g.GPIO_Pin=BTN_PIN; g.GPIO_Mode=GPIO_Mode_IPU; GPIO_Init(BTN_PORT,&g);
-}
-static void BTN_Check(uint8_t *force_redraw) {
-    static uint32_t last=0; static uint8_t prev=1;
-    if(ms()-last<50)return; last=ms();
-    uint8_t cur=(GPIO_ReadInputDataBit(BTN_PORT,BTN_PIN)==Bit_RESET)?0:1;
-    if(cur==0&&prev==1){
-        cur_song=(cur_song+1)%SONG_COUNT; PlaySong(cur_song); is_playing=1; *force_redraw=1;
-    }
-    prev=cur;
-}
-
 /* ── main ── */
 int main(void) {
     SysTick_Init(); OLED_Init(); AudioPWM_Init();
@@ -254,7 +346,7 @@ int main(void) {
     /* 启动菜单：蜂鸣器保持静默，OLED 显示歌曲列表 */
     ShowMenu();
 
-    /* 等待用户选择歌曲 (串口 1~9 或 PA2 按键) */
+    /* 等待用户选择歌曲（串口命令或按键触发） */
     cur_song = 0;
     is_playing = 0;
     while (!is_playing)
@@ -281,20 +373,14 @@ int main(void) {
                 is_playing = 1;
             }
         }
-        /* PA2 按键：直接播放第一首 */
+        /* 统一用 BTN_Check 处理所有按键（含短按/长按） */
         {
-            static uint32_t btn_last = 0; static uint8_t btn_prev = 1;
-            if (ms() - btn_last >= 50) {
-                btn_last = ms();
-                uint8_t cur = (GPIO_ReadInputDataBit(BTN_PORT, BTN_PIN) == Bit_RESET) ? 0 : 1;
-                if (cur == 0 && btn_prev == 1) {
-                    cur_song = 0;
-                    ShowPlayingInfo(0);
-                    PlaySong(0);
-                    is_playing = 1;
-                }
-                btn_prev = cur;
-            }
+            uint8_t dummy = 0;
+            BTN_Check(&dummy);
+            if (is_playing)
+                break; /* BTN_Check 触发了 PlaySong */
+            /* 至少给 20ms 扫描间隙 */
+            Delay_ms(5);
         }
     }
 

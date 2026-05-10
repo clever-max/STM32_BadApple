@@ -64,7 +64,7 @@ SONG_COUNT = 4   # 须与 songs.h 中的 song_table[] 条目数一致
 
 HELP_TEXT = """
 ╔══════════════════════════════════════╗
-║    STM32 Audio Player 遥控器         ║
+║    STM32 Audio Player 遥控器          ║
 ╚══════════════════════════════════════╝
   <数字> + Enter 选歌    [n] 下一首
   [p]      上一首          [Space] 暂停/继续

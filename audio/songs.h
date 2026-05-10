@@ -12,7 +12,7 @@
 #include "music_score_bad_apple.h"
 #include "music_score_wohuainiande.h"
 #include "music_score_tori_no_uta.h"
-#include "music_score____.h"
+#include "music_score_air.h"
 
 typedef enum {
     SONG_TYPE_NOTE  = 0,  /* MusicNote[] */
@@ -32,7 +32,7 @@ static const SongEntry song_table[] = {
     {"Bad Apple",     SONG_TYPE_CHORD, song_bad_apple,     SONG_BAD_APPLE_CHORD_COUNT},
     {"Wo Huai Nian",  SONG_TYPE_CHORD, song_wohuainiande,  SONG_WOHUAINIANDE_CHORD_COUNT},
     {"Tori no Uta",   SONG_TYPE_CHORD, song_tori_no_uta,   SONG_TORI_NO_UTA_CHORD_COUNT},
-    {"Lan Hua Cao",   SONG_TYPE_CHORD, song____,            SONG_____CHORD_COUNT},
+    {"Air", SONG_TYPE_CHORD, song_air, SONG_AIR_CHORD_COUNT},
 };
 
 #endif /* __SONGS_H__ */

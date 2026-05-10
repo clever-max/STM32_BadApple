@@ -1,10 +1,13 @@
 # STM32F103C8 0.96寸 OLED 视频 + 三蜂鸣器音频播放项目
 
-基于 STM32F103C8T6 的 0.96 寸 OLED 显示屏（4 针 I2C 接口）项目，支持三种模式：
+基于 STM32F103C8T6 的 0.96 寸 OLED 显示屏（4 针 I2C 接口）项目，Keil 工程含 **两个 Target**：
 
-- **Flash 模式**：视频帧预存 MCU Flash，独立播放（≤60帧，\~6秒）
-- **串口流模式（视频+音频同步）**：PC 通过 USB 转串口实时发送帧 → 任意时长视频 + 三蜂鸣器真和弦音频
-- **蜂鸣器测试模式**：串口菜单控制蜂鸣器独立播放乐谱
+| Target | 功能 | 主入口 | 说明 |
+|--------|------|--------|------|
+| **Target 1: VideoPlayer** | 串口视频流 + 蜂鸣器音频 | `User/main.c` | PC 推流，OLED 显示 + 三蜂鸣器真和弦 |
+| **Target 2: AudioPlayer** | 独立音乐播放器 | `audio/main.c` | 无需 PC，OLED 选歌，按键/串口双控 |
+
+Keil 中通过顶部 Target 下拉框切换，Audio / Video Source Group 的编译勾选自动切换，互不干扰。
 
 ***
 
@@ -28,30 +31,52 @@
 ```
 4pin/
 ├── User/
-│   ├── main.c                  # 主程序（视频流循环）
+│   ├── main.c                  ★ Target 1 主程序 (视频流 + 音频)
 │   ├── stm32f10x_conf.h        # 标准外设库配置
-│   ├── stm32f10x_it.c/h        # 中断服务（空闲，USART ISR 在 video_stream.c）
+│   └── stm32f10x_it.c/h        # 中断服务
+├── audio/
+│   ├── main.c                  ★ Target 2 主程序 (独立音乐播放器)
+│   ├── songs.h                 歌曲注册表
+│   ├── music_score_*.h         乐谱数据
+│   ├── control.py              串口遥控器
+│   └── convert_to_audio.py     MIDI→乐谱 .h
 ├── Hardware/
+│   ├── audio_pwm.c/h           ★ 三蜂鸣器真和弦驱动 (两 Target 共用)
 │   ├── OLED.c/h                # OLED SSD1306 驱动（软件 I2C + 水平寻址优化）
 │   ├── OLED_Data.c/h           # ASCII/汉字字模、图像数据
+│   ├── video_stream.c/h        # 串口流 DMA 接收 (Target 1)
 │   ├── video_frames.c/h        # Flash 模式帧数据（可选，由脚本生成）
 │   ├── video_player.c/h        # Flash 模式播放器（可选）
-│   ├── video_stream.c/h        # ★ 串口流模式：UART DMA 接收 + 显示
+│   └── music_score.c/h         # 乐谱播放
 ├── System/
 │   └── Delay.c/h               # SysTick 微秒/毫秒/秒延时
 ├── Library/                    # STM32F10x 标准外设库 V3.5.0
 ├── Start/                      # 启动文件 + CMSIS 核心 + 系统时钟
 ├── video/
-│   ├── 3724723-1-208.mp4       # 示例视频
-│   ├── convert_video.py        # 视频 → Flash C 数组 转换工具
-│   └── pc_streamer.py          # ★ PC 串口流式发送器
-├── Project.uvprojx             # Keil 项目文件
+│   ├── pc_streamer.py          ★ PC 串口流式发送器 (v2.1)
+│   ├── convert_score.py        MIDI→MusicChord 三和弦转换
+│   ├── convert_video.py        视频→Flash C 数组 转换工具
+│   └── convert_badapple_score.py
+├── Project.uvprojx             # Keil 项目文件 (含两个 Target)
 └── keilkill.bat                # 清理编译中间文件
+```
+
+### Keil Source Group 架构
+
+```
+Project
+├── User/          → User/main.c (仅 Target 1 编译)
+├── Audio/         → audio/*.c (仅 Target 2 编译)
+├── Video/         → Hardware/video_*.c (仅 Target 1 编译)
+├── Hardware/      → 共用驱动 (两 Target 均编译)
+├── System/        → Delay.c (共用)
+├── Library/       → STM32 标准外设库 (共用)
+└── Start/         → 启动文件 (共用)
 ```
 
 ***
 
-## 模式一：串口流模式（推荐，无时长限制）
+## Target 1 (VideoPlayer) — 串口流模式（推荐，无时长限制）
 
 ### 原理
 
@@ -93,9 +118,8 @@
 **第一步：编译烧录 STM32 固件**
 
 1. Keil MDK 打开 `Project.uvprojx`
-2. 将 `Hardware/video_stream.c` 添加到项目 Source Group
-3. 确保 Include Paths 包含 `Hardware\`
-4. Build (F7) → Download (F8) 烧录
+2. 顶部 Target 下拉选 **"Target 1: VideoPlayer"**
+3. Build (F7) → Download (F8) 烧录
 
 **第二步：连接串口线**
 
@@ -129,7 +153,7 @@ python pc_streamer.py
 
 ***
 
-## 模式三：串口流 + 蜂鸣器音频同步（v2.0 新增）
+### 蜂鸣器音频同步（Target 1 内建，视频播放时自动启用）
 
 ### 音频驱动架构
 
@@ -241,7 +265,37 @@ convert_score.py 输入格式:
 
 ***
 
-## 模式二：Flash 存储模式（独立运行，无需 PC）
+## Target 2 (AudioPlayer) — 独立音乐播放器
+
+Target 2 使用 `audio/main.c` 作为主入口，完全独立运行，无需 PC。上电后 OLED 显示歌曲菜单，通过 4 个按键或串口命令选歌播放。
+
+### 硬件
+
+| 引脚 | 用途 |
+|------|------|
+| PB3 | 按键：短按下一首 / 长按播放暂停 |
+| PB4 | 按键：短按音量+ / 长按切换和声 |
+| PB5 | 按键：短按音量- / 长按切换声道 |
+| PB6 | 按键：短按上一首 / 长按停止 |
+| PA9/PA10 | 串口命令 (115200 bps)，可选 |
+
+### 串口命令
+
+`n`下一首 `p`上一首 `空格`暂停 `s`停止 `h`和声 `v`声道 `+/-`音量 `l`列表
+
+数字键（`1`~`9`）+ Enter 直接选歌。
+
+### 添加新歌曲
+
+1. 将 MIDI 文件放入 `audio/` 目录
+2. 运行 `python audio/convert_to_audio.py your_song.mid --voices 3`
+3. 生成的 `.h` 文件放入 `audio/` 目录
+4. 在 `audio/songs.h` 中注册新歌曲
+5. Keil 中切换到 Target 2 → Build → Download
+
+---
+
+## 附录：Flash 存储模式（可选，独立运行短视频）
 
 适用于无需 PC 的独立短视频播放（logo 动画、开机画面等）。视频帧数据直接烧录进 STM32 的 Flash，上电后自动播放，完全脱离 PC 独立运行。
 
@@ -486,7 +540,7 @@ if (frame_ready) {
 ### 编译步骤
 
 1. Keil MDK 打开 `Project.uvprojx`
-2. 将 `video_stream.c`（或 `video_player.c` + `video_frames.c`）添加到项目
+2. 顶部 Target 下拉选择 **Target 1: VideoPlayer** 或 **Target 2: AudioPlayer**
 3. Build (F7) → 确保 0 Error
 4. Download (F8) 烧录
 
