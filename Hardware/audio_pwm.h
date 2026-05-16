@@ -92,6 +92,10 @@ uint8_t AudioPWM_PlayScore(const MusicNote *score, uint16_t count);
 void AudioPWM_StartChord(const MusicChord *chord);
 uint8_t AudioPWM_PlayChord(const MusicChord *chords, uint16_t count);
 
+/* 暂停/恢复（保留播放位置） */
+void AudioPWM_Pause(void);
+void AudioPWM_Resume(void);
+
 /* 通用 */
 uint8_t AudioPWM_IsPlaying(void);
 void    AudioPWM_Update(void);

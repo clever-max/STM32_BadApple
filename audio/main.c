@@ -38,10 +38,10 @@ typedef struct {
 } BtnDef;
 
 static BtnDef g_btns[NUM_BTNS] = {
-    {GPIO_Pin_3, BTN_ACT_NEXT,   BTN_ACT_PAUSE,   1, 0},  /* PB3 */
+    {GPIO_Pin_3, BTN_ACT_NEXT,   BTN_ACT_NEXT,   1, 0},  /* PB3 */
     {GPIO_Pin_4, BTN_ACT_VOL_UP, BTN_ACT_HARMONY, 1, 0},  /* PB4 */
     {GPIO_Pin_5, BTN_ACT_VOL_DOWN, BTN_ACT_VOICE,   1, 0},  /* PB5 */
-    {GPIO_Pin_6, BTN_ACT_PREV,   BTN_ACT_STOP,    1, 0},  /* PB6 */
+    {GPIO_Pin_6, BTN_ACT_PREV,   BTN_ACT_PREV,   1, 0},  /* PB6 */
 };
 
 /* ── 前向声明 ── */
@@ -53,7 +53,7 @@ static uint8_t is_playing;
 
 static void _exec_btn(BtnAction act, uint8_t *fr)
 {
-    *fr = 1;
+    if (fr) *fr = 1;
     switch (act) {
     case BTN_ACT_NEXT:
         cur_song = (cur_song + 1) % SONG_COUNT;
@@ -70,8 +70,8 @@ static void _exec_btn(BtnAction act, uint8_t *fr)
         if (v > 0) { v -= 10; if (v < 0) v = 0; AudioPWM_SetVolume(v); } break;
     }
     case BTN_ACT_PAUSE:
-        if (is_playing) { is_playing = 0; AudioPWM_StopNote(); }
-        else { is_playing = 1; PlaySong(cur_song); }
+        if (is_playing) { is_playing = 0; AudioPWM_Pause(); }
+        else { is_playing = 1; AudioPWM_Resume(); }
         break;
     case BTN_ACT_HARMONY: {
         HarmonyMode n[4]={HARMONY_OFF,HARMONY_UNISON,HARMONY_OCTAVE,HARMONY_FIFTH};
@@ -173,7 +173,7 @@ static void ShowMenu(void)
     OLED_ShowString(0, 30, "n:next p:prev s:stop", OLED_6X8);
     OLED_ShowString(0, 42, " +/- vol h:harm v:vox", OLED_6X8);
     OLED_Update();
-    Delay_ms(800);
+    Delay_ms(2000);
 
     OLED_Clear();
     OLED_ShowString(0, 0, "=== Songs ===", OLED_8X16);
@@ -343,62 +343,88 @@ int main(void) {
     AudioPWM_SetVolume(50); AudioPWM_SetVoiceMode(VOX_3); AudioPWM_SetHarmony(HARMONY_UNISON);
     USART1_Init(115200); BTN_Init();
 
-    /* 启动菜单：蜂鸣器保持静默，OLED 显示歌曲列表 */
-    ShowMenu();
+    static const uint16_t btns_pin[4] = {GPIO_Pin_3, GPIO_Pin_4, GPIO_Pin_5, GPIO_Pin_6};
 
-    /* 等待用户选择歌曲（串口命令或按键触发） */
-    cur_song = 0;
-    is_playing = 0;
-    while (!is_playing)
+    while (1)
     {
-        if (cmd_ready)
+        /* ── 菜单：显示歌单，等待用户选择 ── */
+        cur_song = 0;
+        is_playing = 0;
+        ShowMenu();
+
         {
-            uint8_t c = usart_cmd; cmd_ready = 0;
-            if (c >= '1' && c <= '9')
+            uint8_t prev[4] = {1,1,1,1};         /* 每次进菜单都重置 */
+            while (!is_playing)
             {
-                uint8_t idx = c - '1';
-                if (idx < SONG_COUNT)
+                if (cmd_ready)
                 {
-                    cur_song = idx;
-                    ShowPlayingInfo(idx);
-                    PlaySong(idx);
-                    is_playing = 1;
+                    uint8_t c = usart_cmd; cmd_ready = 0;
+                    if (c >= '1' && c <= '9')
+                    {
+                        uint8_t idx = c - '1';
+                        if (idx < SONG_COUNT)
+                        {
+                            cur_song = idx;
+                            ShowPlayingInfo(idx);
+                            PlaySong(idx);
+                            is_playing = 1;
+                        }
+                    }
+                    else if (c == 'n' || c == 'N')
+                    {
+                        cur_song = 0;
+                        ShowPlayingInfo(0);
+                        PlaySong(0);
+                        is_playing = 1;
+                    }
+                }
+                /* 边沿检测轮询（不用 ms()，因为 Delay 会关 SysTick） */
+                {
+                    uint8_t any = 0;
+                    for (uint8_t i = 0; i < NUM_BTNS; i++)
+                    {
+                        uint8_t cur = (GPIO_ReadInputDataBit(GPIOB, btns_pin[i]) == Bit_RESET) ? 0 : 1;
+                        if (cur == 0 && prev[i] == 1) {
+                            prev[i] = 0;
+                            any = 1;
+                            _exec_btn(g_btns[i].short_act, 0);
+                            break;
+                        }
+                        prev[i] = cur;
+                    }
+                    if (is_playing)
+                        break;
+                    if (any)
+                        Delay_ms(150);
+                    else
+                        Delay_ms(2);
                 }
             }
-            else if (c == 'n' || c == 'N')
-            {
-                cur_song = 0;
-                ShowPlayingInfo(0);
-                PlaySong(0);
-                is_playing = 1;
+        }
+
+        /* ── 同步 BTN_Check 状态，避免进入播放时误触 ── */
+        for (uint8_t i = 0; i < NUM_BTNS; i++)
+            g_btns[i].prev = (GPIO_ReadInputDataBit(GPIOB, g_btns[i].pin) == Bit_RESET) ? 0 : 1;
+
+        SysTick->CTRL = 0x07;   /* 恢复 SysTick（Delay_ms 会把它关了） */
+
+        /* ── 播放循环 ── */
+        uint8_t force_redraw = 0;
+        while (is_playing) {
+            AudioPWM_Update();
+            if (cmd_ready) { cmd_ready = 0; ProcessCmd(usart_cmd, &force_redraw); }
+            if (num_len > 0 && (ms() - num_last_tick) > 500) {
+                exec_number(); force_redraw = 1;
+            }
+            BTN_Check(&force_redraw);
+            if (!AudioPWM_IsPlaying() && is_playing) {
+                is_playing = 0;
+            }
+            static uint32_t last_draw = 0;
+            if (force_redraw || (ms() - last_draw) > 500) {
+                last_draw = ms(); force_redraw = 0; DrawUI(cur_song, is_playing);
             }
         }
-        /* 统一用 BTN_Check 处理所有按键（含短按/长按） */
-        {
-            uint8_t dummy = 0;
-            BTN_Check(&dummy);
-            if (is_playing)
-                break; /* BTN_Check 触发了 PlaySong */
-            /* 至少给 20ms 扫描间隙 */
-            Delay_ms(5);
-        }
-    }
-
-    uint8_t force_redraw = 0;
-    while (1) {
-        AudioPWM_Update();
-        if (cmd_ready) { cmd_ready = 0; ProcessCmd(usart_cmd, &force_redraw); }
-        /* 多位数超时触发 (500ms 无新数字) */
-        if (num_len > 0 && (ms() - num_last_tick) > 500) {
-            exec_number(); force_redraw = 1;
-        }
-        BTN_Check(&force_redraw);
-        if (!AudioPWM_IsPlaying() && is_playing) {
-            is_playing = 0; force_redraw = 1;
-        }
-        static uint32_t last_draw = 0;
-        if (force_redraw || (ms() - last_draw) > 500) {
-            last_draw = ms(); force_redraw = 0; DrawUI(cur_song, is_playing);
-        }
+        /* STOP 或歌曲结束 → 回到外层循环 → 重新显示菜单 */
     }
 }

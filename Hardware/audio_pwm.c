@@ -356,6 +356,29 @@ uint8_t AudioPWM_PlayChord(const MusicChord *chords, uint16_t count)
 
 
 /* ================================================================
+ * 暂停 / 恢复（保留 note_index，从当前位置继续）
+ * ================================================================ */
+
+void AudioPWM_Pause(void)
+{
+    AudioPWM_StopNote();
+    playing = 0;
+}
+
+
+void AudioPWM_Resume(void)
+{
+    if (score_ptr == 0 || note_index >= score_count) return;
+    playing = 1;
+    note_start = ms_tick;
+    if (is_chord)
+        AudioPWM_StartChord(&((const MusicChord *)score_ptr)[note_index]);
+    else
+        AudioPWM_StartNote(((const MusicNote *)score_ptr)[note_index].freq);
+}
+
+
+/* ================================================================
  * 通用 API
  * ================================================================ */
 
